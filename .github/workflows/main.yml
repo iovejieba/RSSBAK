@@ -1,239 +1,46 @@
-name: RSS Backup (每2小时)
+name: Simple RSS Backup
 
 on:
-  # 定时触发：每2小时运行一次（在每小时的第0分钟）
   schedule:
-    - cron: '0 */2 * * *'  # 每2小时运行一次
-  
-  # 允许手动触发
+    - cron: '0 */2 * * *'  # 每2小时一次
   workflow_dispatch:
-    inputs:
-      feed_url:
-        description: 'RSS链接（覆盖默认）'
-        required: false
-        default: ''
-      force_run:
-        description: '强制运行（即使无变化）'
-        required: false
-        type: boolean
-        default: false
-
-env:
-  # 默认RSS源配置
-  RSS_URL: "https://rsshub.995299.xyz:8443/javbees/new"  # 修改为你的RSS链接
-  RSS_NAME: "javbee"
-  MAX_RUNTIME_MINUTES: 3  # 最长运行时间
 
 jobs:
-  fetch-rss:
+  backup:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ env.MAX_RUNTIME_MINUTES }}
+    timeout-minutes: 5
     
     steps:
-      # 1. 检出代码（只检出feeds目录加快速度）
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            feeds/
-            .github/workflows/fetch-rss.yml
-          sparse-checkout-cone-mode: false
-          fetch-depth: 1
-
-      # 2. 创建必要目录
-      - name: Setup directories
+      - uses: actions/checkout@v4
+      
+      - name: Fetch RSS
         run: |
+          # 创建目录
           mkdir -p feeds
-          mkdir -p .rss_cache
-
-      # 3. 准备抓取脚本
-      - name: Create fetch script
+          
+          # RSS源（修改这里）
+          RSS_URL="https://rsshub.995299.xyz:8443/javbees/new"
+          
+          # 抓取内容
+          curl -s -L "$RSS_URL" -o feeds/rss_feed.xml
+          
+          # 添加时间戳
+          echo "<!-- Last fetched: $(date) -->" >> feeds/rss_feed.xml
+          
+          # 显示信息
+          echo "文件已保存到: feeds/rss_feed.xml"
+          echo "文件大小: $(wc -l < feeds/rss_feed.xml) 行"
+      
+      - name: Commit if changed
         run: |
-          cat > fetch_rss.sh << 'EOF'
-          #!/bin/bash
-          set -e
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
           
-          # 配置
-          RSS_URL="${1:-$RSS_URL}"
-          RSS_NAME="${2:-$RSS_NAME}"
-          FORCE_RUN="${3:-false}"
-          
-          echo "=== RSS抓取任务开始 $(date) ==="
-          echo "目标URL: $RSS_URL"
-          echo "Feed名称: $RSS_NAME"
-          
-          # 临时文件
-          TEMP_FILE="feeds/${RSS_NAME}_new.xml"
-          FINAL_FILE="feeds/${RSS_NAME}.xml"
-          HASH_FILE=".rss_cache/${RSS_NAME}_hash.txt"
-          
-          # 抓取RSS（带超时和重试）
-          echo "正在抓取RSS..."
-          for i in {1..3}; do
-            echo "尝试第 $i 次..."
-            if timeout 45 curl -s -L \
-                -H "User-Agent: Mozilla/5.0 (compatible; RSS-Backup/1.0)" \
-                -H "Accept: application/rss+xml, application/atom+xml, application/xml, text/xml" \
-                -H "Cache-Control: no-cache" \
-                "$RSS_URL" -o "$TEMP_FILE"; then
-              
-              # 检查文件有效性
-              if [ -s "$TEMP_FILE" ] && grep -qi "<rss\|<feed\|<?xml" "$TEMP_FILE"; then
-                echo "抓取成功"
-                break
-              else
-                echo "抓取内容无效"
-                rm -f "$TEMP_FILE"
-              fi
-            fi
-            
-            if [ $i -lt 3 ]; then
-              sleep 5
-            fi
-          done
-          
-          # 检查是否抓取成功
-          if [ ! -f "$TEMP_FILE" ] || [ ! -s "$TEMP_FILE" ]; then
-            echo "错误: 无法抓取RSS内容"
-            exit 1
-          fi
-          
-          # 计算哈希值
-          NEW_HASH=$(sha256sum "$TEMP_FILE" | cut -d' ' -f1)
-          
-          # 读取旧哈希
-          if [ -f "$HASH_FILE" ]; then
-            OLD_HASH=$(cat "$HASH_FILE")
+          # 检查是否有变化
+          if git diff --quiet; then
+            echo "没有更改"
           else
-            OLD_HASH=""
+            git add feeds/
+            git commit -m "📰 RSS备份 $(date +'%Y-%m-%d %H:%M')"
+            git push
           fi
-          
-          # 添加时间戳注释
-          TIMESTAMP="<!-- 最后抓取: $(date '+%Y-%m-%d %H:%M:%S %Z') -->"
-          echo -e "$TIMESTAMP\n" | cat - "$TEMP_FILE" > "${TEMP_FILE}.tmp"
-          mv "${TEMP_FILE}.tmp" "$TEMP_FILE"
-          
-          # 比较哈希值
-          if [ "$NEW_HASH" = "$OLD_HASH" ] && [ "$FORCE_RUN" != "true" ]; then
-            echo "内容无变化，跳过更新"
-            rm -f "$TEMP_FILE"
-            echo "NO_CHANGE=true" >> $GITHUB_ENV
-          else
-            echo "内容已更新，保存文件..."
-            
-            # 保存文件
-            mv "$TEMP_FILE" "$FINAL_FILE"
-            
-            # 更新哈希
-            echo "$NEW_HASH" > "$HASH_FILE"
-            
-            # 统计信息
-            LINE_COUNT=$(wc -l < "$FINAL_FILE")
-            FILE_SIZE=$(stat -c%s "$FINAL_FILE" 2>/dev/null || stat -f%z "$FINAL_FILE")
-            echo "文件大小: $((FILE_SIZE/1024))KB, 行数: $LINE_COUNT"
-            
-            # 提取最后几个项目用于日志
-            echo "最近更新项:"
-            grep -A2 -B2 "<pubDate>\|<lastBuildDate>\|<updated>" "$FINAL_FILE" | head -10 || true
-            
-            echo "CHANGED=true" >> $GITHUB_ENV
-            echo "FILE_NAME=$FINAL_FILE" >> $GITHUB_ENV
-          fi
-          
-          echo "=== 任务完成 ==="
-          EOF
-          
-          chmod +x fetch_rss.sh
-
-      # 4. 执行抓取
-      - name: Fetch RSS content
-        env:
-          # 优先使用手动输入的URL，否则用默认的
-          CUSTOM_RSS_URL: ${{ github.event.inputs.feed_url || env.RSS_URL }}
-          FORCE_RUN: ${{ github.event.inputs.force_run || 'false' }}
-        run: |
-          echo "使用RSS链接: $CUSTOM_RSS_URL"
-          
-          # 执行抓取脚本
-          ./fetch_rss.sh "$CUSTOM_RSS_URL" "my_feed" "$FORCE_RUN" 2>&1 | tee fetch.log
-          
-          # 检查是否有错误
-          if [ $? -ne 0 ]; then
-            echo "::error::RSS抓取失败"
-            cat fetch.log
-            exit 1
-          fi
-          
-          # 显示日志尾部
-          tail -20 fetch.log
-
-      # 5. 清理旧缓存（保留7天）
-      - name: Clean old cache
-        if: always()
-        run: |
-          echo "清理缓存..."
-          find .rss_cache -type f -mtime +7 -delete 2>/dev/null || true
-          echo "当前缓存文件:"
-          ls -la .rss_cache/ 2>/dev/null || echo "无缓存文件"
-
-      # 6. 配置Git
-      - name: Configure Git
-        if: env.CHANGED == 'true'
-        run: |
-          git config --local user.email "rss-bot@users.noreply.github.com"
-          git config --local user.name "RSS Backup Bot"
-          git config --local core.autocrlf false
-          git config --local core.filemode false
-
-      # 7. 提交更改
-      - name: Commit and push
-        if: env.CHANGED == 'true'
-        run: |
-          echo "提交更改..."
-          
-          # 添加文件
-          git add feeds/
-          git add .rss_cache/ 2>/dev/null || true
-          
-          # 生成提交信息
-          COMMIT_MSG="📰 更新 RSS 备份\n\n"
-          COMMIT_MSG+="- 源: ${{ env.CUSTOM_RSS_URL || env.RSS_URL }}\n"
-          COMMIT_MSG+="- 时间: $(date '+%Y-%m-%d %H:%M:%S %Z')\n"
-          
-          if [ -f "${{ env.FILE_NAME }}" ]; then
-            FILE_INFO=$(wc -l < "${{ env.FILE_NAME }}")
-            COMMIT_MSG+="- 行数: ${FILE_INFO}\n"
-          fi
-          
-          # 提交并推送
-          git commit -m "${COMMIT_MSG}" --allow-empty
-          git pull --rebase origin ${GITHUB_REF#refs/heads/} || true
-          git push origin HEAD:${GITHUB_REF#refs/heads/}
-          
-          echo "✅ 更新已提交"
-
-      # 8. 无变化时输出信息
-      - name: No changes
-        if: env.NO_CHANGE == 'true'
-        run: |
-          echo "🎯 RSS内容无变化，跳过提交"
-          echo "下次运行时间: 2小时后"
-          echo "当前时间: $(date)"
-
-      # 9. 上传日志（可选）
-      - name: Upload logs
-        if: always() && failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rss-fetch-logs
-          path: |
-            fetch.log
-            feeds/*.xml
-          retention-days: 7
-
-      # 10. 发送通知（可选）
-      - name: Send notification on failure
-        if: failure()
-        run: |
-          echo "::error::RSS抓取任务失败"
-          echo "请检查: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
