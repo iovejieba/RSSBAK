@@ -20,7 +20,7 @@ jobs:
       - name: Setup variables
         run: |
           echo "RSS_URL=https://rsshub.995299.xyz:8443/javbees/new" >> $GITHUB_ENV
-          echo "XML_FILE=feeds/trending.xml" >> $GITHUB_ENV
+          echo "XML_FILE=feeds/javbee.xml" >> $GITHUB_ENV
           echo "TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
       
       # 3. 获取RSS并保存
