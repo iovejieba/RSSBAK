@@ -11,36 +11,90 @@ jobs:
     timeout-minutes: 5
     
     steps:
+      # 1. 检出代码（完全检出）
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 检出完整历史
       
+      # 2. 设置环境变量（在这里修改你的RSS链接）
+      - name: Setup variables
+        run: |
+          echo "RSS_URL=https://rsshub.app/github/trending/daily" >> $GITHUB_ENV
+          echo "XML_FILE=feeds/trending.xml" >> $GITHUB_ENV
+          echo "TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+      
+      # 3. 获取RSS并保存
       - name: Fetch RSS
         run: |
           # 创建目录
           mkdir -p feeds
           
-          # RSS源（修改这里）
-          RSS_URL="https://rsshub.995299.xyz:8443/javbees/new"
+          echo "正在抓取: ${{ env.RSS_URL }}"
           
-          # 抓取内容
-          curl -s -L "$RSS_URL" -o feeds/rss_feed.xml
+          # 抓取RSS（带用户代理和重试）
+          curl -s -L -A "Mozilla/5.0 (RSS-Backup/1.0)" \
+            "${{ env.RSS_URL }}" -o "${{ env.XML_FILE }}"
           
-          # 添加时间戳
-          echo "<!-- Last fetched: $(date) -->" >> feeds/rss_feed.xml
-          
-          # 显示信息
-          echo "文件已保存到: feeds/rss_feed.xml"
-          echo "文件大小: $(wc -l < feeds/rss_feed.xml) 行"
-      
-      - name: Commit if changed
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-          
-          # 检查是否有变化
-          if git diff --quiet; then
-            echo "没有更改"
-          else
-            git add feeds/
-            git commit -m "📰 RSS备份 $(date +'%Y-%m-%d %H:%M')"
-            git push
+          # 检查是否抓取成功
+          if [ ! -s "${{ env.XML_FILE }}" ]; then
+            echo "错误: 抓取的文件为空"
+            exit 1
           fi
+          
+          # 添加时间戳注释
+          echo "<!-- 最后更新: ${{ env.TIMESTAMP }} -->" | cat - "${{ env.XML_FILE }}" > temp.xml
+          mv temp.xml "${{ env.XML_FILE }}"
+          
+          # 显示文件信息
+          echo "✅ 抓取完成"
+          echo "文件: ${{ env.XML_FILE }}"
+          echo "大小: $(wc -l < "${{ env.XML_FILE }}") 行"
+          echo "最后10行内容:"
+          tail -10 "${{ env.XML_FILE }}"
+      
+      # 4. 配置Git
+      - name: Configure Git
+        run: |
+          git config --local user.email "rss-bot@users.noreply.github.com"
+          git config --local user.name "RSS Backup Bot"
+          git config --global --add safe.directory /github/workspace
+      
+      # 5. 检查更改并提交
+      - name: Check for changes
+        id: check_changes
+        run: |
+          # 检查是否有更改
+          git status --porcelain
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "发现更改"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "没有更改"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+      
+      # 6. 提交更改
+      - name: Commit and push
+        if: steps.check_changes.outputs.has_changes == 'true'
+        run: |
+          echo "提交更改..."
+          
+          # 添加所有文件
+          git add -A
+          
+          # 提交
+          git commit -m "📰 RSS备份 $(date '+%Y-%m-%d %H:%M:%S')
+          
+          - 文件: ${{ env.XML_FILE }}
+          - 时间: ${{ env.TIMESTAMP }}
+          - 源: ${{ env.RSS_URL }}"
+          
+          # 推送
+          git push
+          
+          echo "✅ 已提交到仓库"
+      
+      # 7. 无更改时通知
+      - name: No changes
+        if: steps.check_changes.outputs.has_changes == 'false'
+        run: echo "🤷 没有发现更改，跳过提交"
